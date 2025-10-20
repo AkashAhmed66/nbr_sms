@@ -1,0 +1,332 @@
+<?php
+
+namespace App\Console\Commands;
+
+use Carbon\Carbon;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
+use Modules\Messages\App\Models\Inbox;
+use Modules\Messages\App\Models\Message;
+use Modules\Messages\App\Models\Outbox;
+use Modules\Messages\App\Models\OutboxHistory;
+use Modules\Messages\App\Trait\RetryRequestHandlerTrait;
+use Modules\Users\App\Models\User;
+use Illuminate\Support\Facades\Log;
+
+class SocketServerBackup extends Command
+{
+  use RetryRequestHandlerTrait;
+  protected $signature = 'socket:listen';
+  protected $description = 'Start a socket server that listens on port 8080';
+
+  public function handle()
+  {
+    $host = env('SOCKET_SERVER_LISTENING_HOST', '127.0.0.1');
+    $port = env('SOCKET_SERVER_LISTENING_PORT', 4000);
+
+    // Create a TCP/IP socket
+    $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+    if ($socket === false) {
+      $this->error("Socket creation failed: " . socket_strerror(socket_last_error()));
+      return;
+    }
+
+    // Bind the socket to the IP and port
+    if (socket_bind($socket, $host, $port) === false) {
+      $this->error("Socket binding failed: " . socket_strerror(socket_last_error($socket)));
+      socket_close($socket);
+      return;
+    }
+
+    // Listen for incoming connections
+    if (socket_listen($socket, 5) === false) {
+      $this->error("Socket listening failed: " . socket_strerror(socket_last_error($socket)));
+      socket_close($socket);
+      return;
+    }
+
+    $this->info("Server listening on {$host}:{$port}");
+    //Log::channel('socket')->info("test...");
+
+    while (true) {
+      $clientSocket = @socket_accept($socket);
+      if ($clientSocket === false) {
+        $this->error("Socket accept failed: " . socket_strerror(socket_last_error($socket)));
+      }
+
+
+      // Loop to keep the server running and accepting connections
+      while (true) {
+        // Read the client message
+        try {
+          $message = trim(socket_read($clientSocket, 1024, PHP_NORMAL_READ));
+          //$this->info("Received message: {$message}");
+          //Log::channel('socketlisten')->info($message);
+          if (empty($message)) {
+            break;
+          }
+
+          //$message = "SMS_STATUS|messageId|status|userId";
+          $this->updateMessage($message);
+        } catch (\Exception $exception) {
+          break;
+        }
+      }
+      socket_close($clientSocket);
+    }
+  }
+
+  public function updateMessage($message)
+  {
+    try {
+      $messageParts = explode("|", $message);
+
+      if ($messageParts[0] == 'RETRY') {
+        $this->requestNumberRetryProcess($messageParts);
+      } elseif ($messageParts[0] == 'SMS_STATUS') {
+        $this->messageDlrStatusUpdateProcess($messageParts);
+      } elseif ($messageParts[0] == 'INCOMING') {
+        $this->incomingMessageProcess($messageParts);
+      } else {
+        $this->error("Invalid message format.");
+        return;
+      }
+    } catch (\Exception $e) {
+      $this->error("Unexpected error: " . $e->getMessage());
+    }
+  }
+
+
+  public function requestNumberRetryProcess($messageParts)
+  {
+    Log::channel('socketlisten')->info("Retry request for mobile:".$messageParts[1]);
+
+    try {
+      $requestNumberRetry = [
+        'mobile' => $messageParts[1],
+        'retry_at' => now(),
+      ];
+      DB::table('retry_request_number')->insert($requestNumberRetry);
+
+      $this->handleRetryRequest($messageParts[1]);
+    }catch (\Exception $e) {
+      Log::channel('socketlisten')->info("requestNumberRetryProcess error ". $e->getMessage());
+    }
+  }
+
+  public function messageDlrStatusUpdateProcess($messageParts)
+  {
+    Log::channel('socketlisten')->info("Message update process started");
+    $messageId = $messageParts[1];
+    $statusCode = (int)$messageParts[2];
+
+    $status = $this->getMessageStatusByCode($statusCode);
+
+    $dlrStatusData = $this->getDlrStatusInfo($statusCode);
+    $now = Carbon::now();
+
+    $outboxSingleMessage = Outbox::find($messageId);
+
+
+    Log::channel('socketlisten')->info("Socket log ".$outboxSingleMessage->destmn . " | " . $messageId . " | " . $statusCode );
+
+    if (!$outboxSingleMessage) {
+      Log::channel('socketlisten')->info("Outbox message not found ");
+      $this->error("Outbox message not found.");
+      return;
+    }
+
+    $user = User::find($outboxSingleMessage->user_id);
+    $smsRate = (@$user->smsRate->nonmasking_rate ?? 0) * $outboxSingleMessage->smscount;
+
+
+    //CALL API: DLR Callback
+    if (($statusCode !== 1001) || ($statusCode !== 1002)) {
+      $infozillionDlrCallbackResponse = $this->infozillionDlrCallback($user, $outboxSingleMessage, $statusCode);
+
+      $infozillionStatusCode = null;
+      $infozillionStatusMeaning = null;
+      if ($infozillionDlrCallbackResponse) {
+        $data = json_decode($infozillionDlrCallbackResponse, true);
+        $infozillionStatusCode = $data['statusInfo']['statusCode'];
+        $infozillionStatusMeaning = $data['statusInfo']['errordescription'];
+      }
+    }
+
+    try {
+
+      //Log::channel('socketlisten')->info("code: " . $dlrStatusData['code']);
+      //Log::channel('socketlisten')->info("status: " . $dlrStatusData['status']);
+      //Log::channel('socketlisten')->info("meaning: " . $dlrStatusData['meaning']);
+
+      Outbox::where('id', $messageId)->update([
+        'status' => $status,
+        'sent_time' => $now,
+        'sms_cost' => $smsRate,
+        'error_code' => 0,
+        'error_message' => 'No error',
+        'updated_at' => $now,
+        'dlr_status_code' => $dlrStatusData['code'] == 0 ? 200 : $dlrStatusData['code'],
+        'dlr_status' => $dlrStatusData['status'],
+        'dlr_status_meaning' => $dlrStatusData['meaning'],
+        'infozillion_dlr_status_code' => $infozillionStatusCode,
+        'infozillion_dlr_status_meaning' => $infozillionStatusMeaning,
+      ]);
+
+      OutboxHistory::where('id', $messageId)->update([
+        'status' => $status,
+        'sent_time' => $now,
+        'sms_cost' => $smsRate,
+        'error_code' => 0,
+        'error_message' => 'No error',
+        'updated_at' => $now,
+        'dlr_status_code' => $dlrStatusData['code'] == 0 ? 200 : $dlrStatusData['code'],
+        'dlr_status' => $dlrStatusData['status'],
+        'dlr_status_meaning' => $dlrStatusData['meaning'],
+        'infozillion_dlr_status_code' => $infozillionStatusCode,
+        'infozillion_dlr_status_meaning' => $infozillionStatusMeaning,
+      ]);
+
+/*      if ($statusCode === 0) {
+        $user->available_balance -= $smsRate;
+        $user->updated_at = $now;
+        $user->save();
+      }*/
+
+      Log::channel('socketlisten')->info("Message update process completed successfully");
+      $this->info("Socket log ".$outboxSingleMessage->destmn . " | " . $messageId . " | " . $statusCode);
+    } catch (\Exception $e) {
+      $this->error("Error updating DB records: " . $e->getMessage());
+    }
+  }
+
+  public function incomingMessageProcess($messageParts)
+  {
+    try {
+      $inbox = [
+        'sender' => $messageParts[1],
+        'receiver' => $messageParts[2],
+        'message' => $messageParts[3] ?? '',
+        'smscount' => $messageParts[4] ?? 1,
+        'part_no' => $messageParts[5] ?? 1,
+        'total_parts' => $messageParts[6] ?? 1,
+        'reference_no' => $messageParts[7] ?? 0,
+        'red' => $messageParts[8] ?? 0,
+      ];
+
+      Inbox::create($inbox);
+    } catch (\Exception $e) {
+      $this->error("Error saving inbox message: " . $e->getMessage());
+      Log::channel('socketlisten')->error("Error saving inbox message: " . $e->getMessage());
+    }
+  }
+
+
+  private function infozillionDlrCallback($user, $messageInfo, $statusCode)
+  {
+    if ($statusCode == 0) {
+      $status = 'Delivered';
+    } else {
+      $status = 'Undelivered';
+    }
+
+    $dlrResult = '';
+    for ($key = 0; $key < $messageInfo->smscount; $key++) {
+      $parts = explode('-', $messageInfo->sms_uniq_id);
+      $last_part = end($parts);
+      $incremented = str_pad((int)$last_part + $key, strlen($last_part), '0', STR_PAD_LEFT);
+      $parts[count($parts) - 1] = $incremented;
+      $new_str = implode('-', $parts);
+
+      try {
+        //log add
+        //Log::channel('socketlisten')->info("DLR webhook message id:");
+        //Log::channel('socketlisten')->info($messageInfo->id);
+        //Log::channel('socketlisten')->info("DLR status code:".$statusCode);
+        //Log::channel('socketlisten')->info("Date Time: ");
+        //Log::channel('socketlisten')->info(date('Y-m-d H:i:s'));
+
+        $data = [
+          "username" => env('DLR_USERNAME'), //$user->username,
+          "password" => env('DLR_PASSWORD'), //$user->password_text,
+          "messageId" => $new_str,
+          "status" => $status,
+          "errorCode" => "0",
+          "mobile" => $messageInfo->destmn,
+          "shortMessage" => $messageInfo->message,
+          "submitDate" => $messageInfo->write_time,
+          "doneDate" => date('Y-m-d H:i:s'),
+        ];
+
+        $options = [
+          'http' => [
+            'header' => "Content-Type: application/json\r\n",
+            'method' => 'POST',
+            'content' => json_encode($data),
+            'ignore_errors' => true // Get response even on HTTP error
+          ]
+        ];
+
+        $context = stream_context_create($options);
+        $result = file_get_contents(env('DLR_URL'), false, $context);
+        if ($result === FALSE) {
+          $dlrResult = '';
+        } else {
+          $dlrResult = $result;
+        }
+
+        //Log::channel('socketlisten')->info("DLR payload:");
+        //Log::channel('socketlisten')->info(json_encode($data));
+        //Log::channel('socketlisten')->info("DLR response:");
+        //Log::channel('socketlisten')->info($dlrResult);
+      } catch (\Exception $e) {
+        Log::channel('socketlisten')->info("DLR Error: " . date('Y-m-d H:i:s') . ' - ' . $e->getMessage());
+        $this->error("Error in infozillionDlrCallback: " . $e->getMessage());
+      }
+    }
+
+    return $dlrResult;
+  }
+
+  private function getDlrStatusInfo($code)
+  {
+    $map = [
+      0 => ['status' => 'Delivered', 'meaning' => 'Delivered in Handset'],
+      6 => ['status' => 'Absent subscriber for SM', 'meaning' => 'Subscriber handset is not logged onto the network...'],
+      32 => ['status' => 'Undelivered', 'meaning' => 'No memory capacity on handset...'],
+      31 => ['status' => 'Subscriber Busy', 'meaning' => 'MSC is busy handling an existing transaction...'],
+      5 => ['status' => 'Unidentified subscriber', 'meaning' => 'MT number is unknown in the MT network’s MSC'],
+      13 => ['status' => 'Barred subscriber', 'meaning' => 'A Barred Number is a number that cannot receive SMS...'],
+      9 => ['status' => 'Illegal subscriber', 'meaning' => 'Sender ID Blocked by operators for Illegal SMS Traffic'],
+      36 => ['status' => 'SMS Failed', 'meaning' => 'Sender ID Blocked by operators for Illegal SMS Traffic'],
+      34 => ['status' => 'System failure', 'meaning' => 'Rejection due to SS7 protocol or network failure'],
+      8 => ['status' => 'SMS Failed', 'meaning' => 'Network failure in SMSC Link'],
+      400 => ['status' => 'SMSC Timeout-abort', 'meaning' => 'SMSC timeout (Network problem)'],
+      456 => ['status' => 'SMSC Timeout-abort', 'meaning' => 'SMSC timeout (Network problem)'],
+      8001 => ['status' => 'SRI Response not found', 'meaning' => 'SRI Response not found'],
+      9001 => ['status' => 'FSM Response not found', 'meaning' => 'FSM Response not found'],
+      1001 => ['status' => 'Message sent to Engine', 'meaning' => 'Message sent to Engine'],
+      1002 => ['status' => 'Message sent to Queue', 'meaning' => 'Message sent to Queue'],
+    ];
+
+    return [
+      'code' => $code,
+      'status' => $map[$code]['status'] ?? 'SMS Failed',
+      'meaning' => $map[$code]['meaning'] ?? 'Network failure in SMSC Link',
+    ];
+  }
+
+  public function getMessageStatusByCode($code): string
+  {
+    switch ($code) {
+      case 0:
+        return 'Delivered';
+      case 1001:
+        return 'Sent';
+      case 1002:
+        return 'Queue';
+      default:
+        return 'Failed';
+    }
+  }
+}

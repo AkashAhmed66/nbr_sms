@@ -1,0 +1,130 @@
+<?php
+
+namespace Modules\API\App\Repositories;
+
+use Modules\API\App\Jobs\ProcessOutboxAndSocketJob;
+use Modules\Messages\App\Models\Message;
+use Modules\Messages\App\Trait\AggregatorTrait;
+use Modules\Messages\App\Trait\SmsCountTrait;
+use Modules\Smsconfig\App\Models\SenderId;
+use Modules\Users\App\Models\User;
+
+class CustomerApiRepository implements CustomerApiRepositoryInterface
+{
+  use SmsCountTrait;
+  use AggregatorTrait;
+
+  protected $model;
+  protected $user;
+
+  public function __construct(Message $model)
+  {
+    $this->model = $model;
+  }
+
+  public function checkValidUser($apiKey)
+  {
+    $user = User::where('APIKEY', $apiKey)->first();
+    if (!$user) {
+      return false;
+    } else {
+      return $user;
+    }
+  }
+
+  public function checkSenderId($senderId, $user)
+  {
+    $senderIdInfo = SenderId::where('senderID', $senderId)
+      ->where('assigned_user_id', $user->id)
+      ->where('status', '=', 'Active')->first();
+    if (!$senderIdInfo) {
+      return false;
+    } else {
+      return $senderIdInfo->senderID;
+    }
+  }
+
+  public function checkBalance($request, $user)
+  {
+    $userInputRecipients = $request->contacts;
+    $message = $request->msg;
+    $numbers = $this->filterWrongRecipient($userInputRecipients);
+    $totalNumber = count($numbers);
+    $recipients = implode(',', $numbers);
+    $smsInfo = $this->countSms($message);
+    $countSms = $smsInfo->count;
+
+    if (($totalNumber * $countSms) > intval($user->available_balance)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  public function filterWrongRecipient($recipients): array
+  {
+    $error_sms = [];
+    $pattern = "/(^(\+8801|8801|01|008801))[1|3-9]{1}(\d){8}$/";
+    $explodeRecipients =  is_string($recipients) ? explode(',', $recipients)  : $recipients;
+    $numbers = [];
+    foreach ($explodeRecipients as $explodeRecipient) {
+      if (preg_match($pattern, $explodeRecipient)) {
+        $numbers[] = $explodeRecipient;
+      } else {
+        $error_sms[] = [
+          'wrong-recipient' => '(' . $explodeRecipient . ') is wrong recipient. Message can\'t send to this recipient'
+        ];
+      }
+    }
+    return $numbers;
+  }
+
+
+  public function saveRegularMessage(array $data, $user): object
+  {
+    try {
+      $messagePayload['senderID'] = $data['sender_id'];
+      $messagePayload['message'] = $data['message_text'];
+      $messagePayload['source'] = $data['source'] ?? 'WEB';
+      $messagePayload['date'] = date('Y-m-d H:i:s');
+      $messagePayload['sms_type'] = 'sendSms';
+      $messagePayload['scheduleDateTime'] = $data['scheduleDateTime'] ?? null;
+      $messagePayload['status'] = 'Queue';
+      $messagePayload['content_type'] = $data['content_type'];
+      $messagePayload['campaign_name'] = $data['campaign_name'] ?? 'WEB';
+      $messagePayload['orderid'] = $user->id . $this->microseconds();
+      $messagePayload['user_id'] = $user->id;
+      $messagePayload['IP'] = request()->ip();
+      $messagePayload['total_recipient'] = $data['totalPhoneNumber'];
+      $messagePayload['is_dnd_applicable'] = $data['is_dnd_applicable'] ?? null;
+      $messagePayload['is_unicode'] = false;
+      $messagePayload['recipient'] = implode(",", $data['recipient_number']);
+      $messagePayload['campaign_id'] = NULL;
+
+      $messageResponse = $this->model->create($messagePayload);
+
+      // Dispatch job for background processing
+      ProcessOutboxAndSocketJob::dispatch($messageResponse, $data, $user)
+        ->onQueue('sms_processing');
+      return $messageResponse;
+    } catch (\Exception $e) {
+      return false;
+    }
+  }
+
+  private function microseconds(): int
+  {
+    $mt = explode(' ', microtime());
+    return intval($mt[1] * 1E6) + intval(round($mt[0] * 1E6));
+  }
+
+  public function create(array $data): Message
+  {
+    return $this->model->create($data);
+  }
+
+  public function find(int $id): Message
+  {
+    return $this->model->find($id);
+  }
+}

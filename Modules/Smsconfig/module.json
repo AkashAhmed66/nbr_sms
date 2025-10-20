@@ -1,0 +1,11 @@
+{
+    "name": "Smsconfig",
+    "alias": "smsconfig",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\Smsconfig\\App\\Providers\\SmsconfigServiceProvider"
+    ],
+    "files": []
+}

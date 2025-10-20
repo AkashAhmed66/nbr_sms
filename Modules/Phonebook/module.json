@@ -1,0 +1,11 @@
+{
+    "name": "Phonebook",
+    "alias": "phonebook",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\Phonebook\\App\\Providers\\PhonebookServiceProvider"
+    ],
+    "files": []
+}

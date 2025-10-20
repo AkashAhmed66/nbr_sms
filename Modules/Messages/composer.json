@@ -1,0 +1,31 @@
+{
+    "name": "nwidart/messages",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Messages\\": "",
+            "Modules\\Messages\\App\\": "app/",
+            "Modules\\Messages\\Database\\Factories\\": "database/factories/",
+            "Modules\\Messages\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Messages\\Tests\\": "tests/"
+        }
+    }
+}

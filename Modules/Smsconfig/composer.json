@@ -1,0 +1,31 @@
+{
+    "name": "nwidart/smsconfig",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Smsconfig\\": "",
+            "Modules\\Smsconfig\\App\\": "app/",
+            "Modules\\Smsconfig\\Database\\Factories\\": "database/factories/",
+            "Modules\\Smsconfig\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Smsconfig\\Tests\\": "tests/"
+        }
+    }
+}

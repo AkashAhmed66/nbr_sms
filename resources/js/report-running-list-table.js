@@ -1,0 +1,300 @@
+'use strict';
+$(function () {
+  var data_table = $('#datatable');
+  $.ajaxSetup({
+    headers: {
+      'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
+    }
+  });
+
+  //var columnDefs = [];
+  var columnDefs = [{
+    // Serial number column definition
+    targets: 0,
+    title: '#', // Label for the serial number column
+    render: function (data, type, full, meta) {
+      // Return the row number (index + 1)
+      return meta.row + meta.settings._iDisplayStart + 1;
+    },
+    orderable: false, // Make the serial number column not sortable
+  }];
+  Object.entries(tableHeaders).forEach(function ([key, value], index) {
+    var columnDef = {
+      targets: index,
+      sortable: true,
+      render: function (data, type, full, meta) {
+        return `<span>${full[key]}</span>`;
+      }
+    };
+    columnDefs.push(columnDef);
+  });
+
+  if (data_table.length) {
+    var dt_user = data_table.DataTable({
+      processing: true,
+      serverSide: true,
+      ajax: {
+        url: ajaxUrl,
+        data: function (d) {
+          // Add filter form data to the request
+          d.from_date = $('#from_date').val();
+          d.to_date = $('#to_date').val();
+          d.campaign_id = $('#campaign_id').val();
+          d.user_id = $('#user_id').val();
+        }
+      },
+      columns: [{ data: '' }, Object.entries(tableHeaders).map(([key, value]) => {
+        return { data: key };
+      })],
+
+      columnDefs: columnDefs,
+
+      order: [[2, 'desc']],
+      dom:
+        '<"card-header d-flex rounded-0 flex-wrap pb-md-0 pt-0"' +
+        '<"me-5 ms-n2"f>' +
+        '<"d-flex justify-content-start justify-content-md-end align-items-baseline"<"dt-action-buttons d-flex align-items-start align-items-md-center justify-content-sm-center gap-4"lB>>' +
+        '>t' +
+        '<"row mx-1"' +
+        '<"col-sm-12 col-md-6"i>' +
+        '<"col-sm-12 col-md-6"p>' +
+        '>',
+      lengthMenu: [10, 20, 50, 70, 100], //for length of menu
+      language: {
+        sLengthMenu: '_MENU_',
+        search: '',
+        searchPlaceholder: 'Search',
+        info: 'Displaying _START_ to _END_ of _TOTAL_ entries'
+      },
+      // Buttons with Dropdown
+      buttons: [
+        {
+          extend: 'collection',
+          className: 'btn btn-outline-secondary dropdown-toggle me-4 waves-effect waves-light',
+          text: '<i class="ri-upload-2-line ri-16px me-2"></i><span class="d-none d-sm-inline-block">Export </span>',
+          buttons: [
+            {
+              extend: 'print',
+              title: title,
+              text: '<i class="ri-printer-line me-1" ></i>Print',
+              className: 'dropdown-item',
+              exportOptions: {
+                columns: [1, 2, 3, 4, 5],
+                // prevent avatar to be print
+                format: {
+                  body: function (inner, coldex, rowdex) {
+                    if (inner.length <= 0) return inner;
+                    var el = $.parseHTML(inner);
+                    var result = '';
+                    $.each(el, function (index, item) {
+                      if (item.classList !== undefined && item.classList.contains('user-name')) {
+                        result = result + item.lastChild.firstChild.textContent;
+                      } else if (item.innerText === undefined) {
+                        result = result + item.textContent;
+                      } else result = result + item.innerText;
+                    });
+                    return result;
+                  }
+                }
+              },
+              customize: function (win) {
+                //customize print view for dark
+                $(win.document.body)
+                  .css('color', config.colors.headingColor)
+                  .css('border-color', config.colors.borderColor)
+                  .css('background-color', config.colors.body);
+                $(win.document.body)
+                  .find('table')
+                  .addClass('compact')
+                  .css('color', 'inherit')
+                  .css('border-color', 'inherit')
+                  .css('background-color', 'inherit');
+              }
+            },
+            {
+              extend: 'csv',
+              title: title,
+              text: '<i class="ri-file-text-line me-1" ></i>Csv',
+              className: 'dropdown-item',
+              exportOptions: {
+                columns: [1, 2, 3, 4, 5],
+                // prevent avatar to be print
+                format: {
+                  body: function (inner, coldex, rowdex) {
+                    if (inner.length <= 0) return inner;
+                    var el = $.parseHTML(inner);
+                    var result = '';
+                    $.each(el, function (index, item) {
+                      if (item.classList !== undefined && item.classList.contains('user-name')) {
+                        result = result + item.lastChild.firstChild.textContent;
+                      } else if (item.innerText === undefined) {
+                        result = result + item.textContent;
+                      } else result = result + item.innerText;
+                    });
+                    return result;
+                  }
+                }
+              }
+            },
+            {
+              extend: 'excel',
+              title: title,
+              text: '<i class="ri-file-excel-line me-1"></i>Excel',
+              className: 'dropdown-item',
+              exportOptions: {
+                columns: [1, 2, 3, 4, 5],
+                // prevent avatar to be display
+                format: {
+                  body: function (inner, coldex, rowdex) {
+                    if (inner.length <= 0) return inner;
+                    var el = $.parseHTML(inner);
+                    var result = '';
+                    $.each(el, function (index, item) {
+                      if (item.classList !== undefined && item.classList.contains('user-name')) {
+                        result = result + item.lastChild.firstChild.textContent;
+                      } else if (item.innerText === undefined) {
+                        result = result + item.textContent;
+                      } else result = result + item.innerText;
+                    });
+                    return result;
+                  }
+                }
+              }
+            },
+            {
+              extend: 'pdf',
+              title: title,
+              text: '<i class="ri-file-pdf-line me-1"></i>Pdf',
+              className: 'dropdown-item',
+              exportOptions: {
+                columns: [1, 2, 3, 4, 5],
+                // prevent avatar to be display
+                format: {
+                  body: function (inner, coldex, rowdex) {
+                    if (inner.length <= 0) return inner;
+                    var el = $.parseHTML(inner);
+                    var result = '';
+                    $.each(el, function (index, item) {
+                      if (item.classList !== undefined && item.classList.contains('user-name')) {
+                        result = result + item.lastChild.firstChild.textContent;
+                      } else if (item.innerText === undefined) {
+                        result = result + item.textContent;
+                      } else result = result + item.innerText;
+                    });
+                    return result;
+                  }
+                }
+              }
+            },
+            {
+              extend: 'copy',
+              title: title,
+              text: '<i class="ri-file-copy-line me-1"></i>Copy',
+              className: 'dropdown-item',
+              exportOptions: {
+                columns: [1, 2, 3, 4, 5],
+                // prevent avatar to be copy
+                format: {
+                  body: function (inner, coldex, rowdex) {
+                    if (inner.length <= 0) return inner;
+                    var el = $.parseHTML(inner);
+                    var result = '';
+                    $.each(el, function (index, item) {
+                      if (item.classList !== undefined && item.classList.contains('user-name')) {
+                        result = result + item.lastChild.firstChild.textContent;
+                      } else if (item.innerText === undefined) {
+                        result = result + item.textContent;
+                      } else result = result + item.innerText;
+                    });
+                    return result;
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      // For responsive popup
+      responsive: {
+        details: {
+          display: $.fn.dataTable.Responsive.display.modal({
+            header: function (row) {
+              var data = row.data();
+              return 'Details of ' + data['name'];
+            }
+          }),
+          type: 'column',
+          renderer: function (api, rowIdx, columns) {
+            var data = $.map(columns, function (col, i) {
+              return col.title !== '' // ? Do not show row in modal popup if title is blank (for check box)
+                ? '<tr data-dt-row="' +
+                col.rowIndex +
+                '" data-dt-column="' +
+                col.columnIndex +
+                '">' +
+                '<td>' +
+                col.title +
+                ':' +
+                '</td> ' +
+                '<td>' +
+                col.data +
+                '</td>' +
+                '</tr>'
+                : '';
+            }).join('');
+
+            return data ? $('<table class="table"/><tbody />').append(data) : false;
+          }
+        }
+      }
+    });
+
+    // Filter functionality
+    $('#filterBtn').on('click', function () {
+      dt_user.ajax.reload();
+    });
+
+    // Reset functionality
+    $('#resetBtn').on('click', function () {
+      $('#filterForm')[0].reset();
+      dt_user.ajax.reload();
+    });
+
+    // Auto-apply filter on Enter key
+    $('#filterForm input').on('keypress', function (e) {
+      if (e.which === 13) {
+        e.preventDefault();
+        dt_user.ajax.reload();
+      }
+    });
+
+    // Action button click handler
+    $(document).on('click', '.campaign-action-btn', function () {
+      const campaignId = $(this).data('id');
+
+      // Call the campaign details route
+      const actionUrl = `/campaign/details/${campaignId}`;
+
+      // console.log('Action URL:', $(this).data());
+      // Navigate to the campaign details page
+      window.location.href = actionUrl;
+
+      // Option 2: If you want to open in new tab, uncomment this instead:
+      // window.open(actionUrl, '_blank');
+
+      // Option 3: If you want to make an AJAX call, uncomment this instead:
+      // $.ajax({
+      //   url: actionUrl,
+      //   method: 'GET',
+      //   success: function(response) {
+      //     // Handle success response
+      //     console.log('Action completed successfully');
+      //   },
+      //   error: function(xhr, status, error) {
+      //     // Handle error
+      //     console.error('Action failed:', error);
+      //   }
+      // });
+    });
+  }
+});
