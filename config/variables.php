@@ -3,11 +3,11 @@
 return [
   "creatorName" => "RIB",
   "creatorUrl" => "#",
-  "templateName" => "GenNet",
+  "templateName" => "NBR",
   "templateSuffix" => "V2",
   "templateVersion" => "1.3.0",
   "templateFree" => false,
-  "templateDescription" => "GenNet – is the most developer friendly & highly customizable Admin Dashboard Template.",
+  "templateDescription" => "NBR – is the most developer friendly & highly customizable Admin Dashboard Template.",
   "templateKeyword" => "dashboard, material, material design, bootstrap 5 dashboard, bootstrap 5 design, bootstrap 5",
   "licenseUrl" => "https://themeforest.net/licenses/standard",
   "livePreview" => "https://pixinvent.com/materialize-bootstrap-laravel-admin-template/",
