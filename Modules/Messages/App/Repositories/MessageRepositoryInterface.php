@@ -24,6 +24,4 @@ interface MessageRepositoryInterface
   public function delete(int $id): bool;
 
   public function sendMessageToSocket(array $data, int $orderId): void;
-
-  public function retryCampaign($id);
 }

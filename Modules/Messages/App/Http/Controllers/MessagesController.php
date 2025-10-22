@@ -5,40 +5,36 @@ namespace Modules\Messages\App\Http\Controllers;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use App\Trait\ActionButtonTrait;
 use Illuminate\Support\Facades\Auth;
 use Modules\Messages\App\Http\Requests\CreateDynamicMessageRequest;
 use Modules\Messages\App\Repositories\MessageRepositoryInterface;
 use Modules\Messages\App\Repositories\TemplateRepositoryInterface;
-use Modules\Messages\App\Trait\SmsCountTrait;
 use Modules\Phonebook\App\Repositories\GroupRepositoryInterface;
-use Modules\Smsconfig\App\Repositories\MaskRepositoryInterface;
 use Modules\Smsconfig\App\Repositories\SenderIdRepositoryInterface;
-use Modules\Users\App\Models\User;
 use Yajra\DataTables\DataTables;
 use Illuminate\Support\Facades\DB;
 use Maatwebsite\Excel\Facades\Excel;
-use Modules\Messages\App\Trait\DataTableTrait;
+use App\Imports\MobileNumberImport;
+use Illuminate\Support\Facades\Log;
+use Modules\Messages\App\Trait\SmsCountTrait;
+use Modules\Transactions\App\Models\UserWallet;
+use Modules\Users\App\Models\User;
 
 class MessagesController extends Controller
 {
-  use DataTableTrait;
-  use ActionButtonTrait;
-  use SmsCountTrait;
   protected MessageRepositoryInterface $messageRepository;
   private $user;
+  use SmsCountTrait;
 
   public function __construct(
     MessageRepositoryInterface $messageRepository,
     SenderIdRepositoryInterface $senderIdRepository,
-    MaskRepositoryInterface $maskRepository,
     TemplateRepositoryInterface $templateRepository,
     GroupRepositoryInterface $groupRepository
   ) {
     $this->user = Auth::user();
     $this->messageRepository = $messageRepository;
     $this->senderIdRepository = $senderIdRepository;
-    $this->maskRepository = $maskRepository;
     $this->templateRepository = $templateRepository;
     $this->groupRepository = $groupRepository;
   }
@@ -47,96 +43,104 @@ class MessagesController extends Controller
   {
     $title = 'Messages Inbox List';
     $datas = $this->messageRepository->all();
-    $ajaxUrl = route('inbox-list');
-    //dd($datas);
+    $ajaxUrl = route('messages-inbox.list');
+
     if ($this->ajaxDatatable()) {
       return DataTables::of($datas)
-          ->editColumn('write_time', fn($row) => date("D jS \\of M Y h:i:s A", strtotime($row->created_at)))
-          ->editColumn('sent_time', fn($row) => $row->sent_time ? date("D jS \\of M Y h:i:s A", strtotime($row->sent_time)) : '')
-          ->addIndexColumn()
-        //->rawColumns(['action'])
+        ->addIndexColumn()
+        ->addColumn('status', fn($row) => $this->statusButton($row->status, $row->id))
+        ->addColumn('action', fn($row) => $this->editButton('messages.edit', $row->id))
+        ->rawColumns(['status', 'action'])
         ->make();
     }
-    $tableHeaders = $this->getTableHeader('sms-inbox-list');
 
-    return view('messages::message.index', compact('title', 'tableHeaders', 'ajaxUrl'));
+    return view('messages::index', compact('title', $this->getTableHeader('messages-list'), 'ajaxUrl'));
   }
 
-  public function storeRegularMessage(Request $request): RedirectResponse
+  /*public function storeRegularMessage(Request $request): RedirectResponse
   {
-    if ($request->isScheduleMessage == '1') {
-      $scheduleDateTime = \Carbon\Carbon::createFromFormat(
-          'Y-m-d H:i',
-          $request->scheduleDate . ' ' . $request->scheduleTime,
-          'Asia/Dhaka' // Set BD timezone
-      );
-      if ($scheduleDateTime->isPast()) {
-            return redirect()->route('messages.create')->with('error', 'Scheduled time must be in the future');
-        }
-    }
 
-    $dndNumbers = [];
-    if($request->dnd && $request->dnd == '1') {
-      $dndNumbers = DB::table('dnds')->where('user_id', auth()->user()->id)->pluck('phone')->toArray();
-    }
+    $totalPhoneNumber = count(explode(",", rtrim($request->recipient_number, ',')));
 
-    $numbers = explode(',', $request->recipient_number); // split into array
-    $numbers = array_map('trim', $numbers); // remove extra spaces
+    //$totalPhoneNumber = $request->totalPhoneNumber ?? ($request->number ? count(
+      //explode(",", rtrim($request->number, ','))
+    //) : 0);
+    //$totalCost = $totalPhoneNumber * $request->totalMessageCount ?? 0 * $this->user->smsRate->nonmasking_rate ?? 0;
 
-    // Normalize DND numbers (make sure they start with "88")
-    $dndNumbers = array_map(function($num) {
-        $num = preg_replace('/\s+/', '', $num); // remove spaces
-        if (!str_starts_with($num, '88')) {
-            $num = '88' . $num;
-        }
-        return $num;
-    }, $dndNumbers);
-
-    // Filter out numbers that match any in DND list (normalize before checking)
-    $filteredNumbers = array_filter($numbers, function($num) use ($dndNumbers) {
-        $normalized = str_starts_with($num, '88') ? $num : '88' . $num;
-        return !in_array($normalized, $dndNumbers);
-    });
-
-    // Convert back to comma-separated string
-    $request->merge(['recipient_number' => implode(',', $filteredNumbers)]);
-
-    // dd($request->recipient_number);
-
-    $totalPhoneNumber = count(explode(",", $request->recipient_number));
-
-    if($request->masking_type == 'Masking'){
-      $totalCost = $totalPhoneNumber * ($this->countSms($request->message_text)->count) ?? 0 * $this->user->smsRate->masking_rate ?? 0;
-    }else{
-      $totalCost = $totalPhoneNumber * ($this->countSms($request->message_text)->count) ?? 0 * $this->user->smsRate->nonmasking_rate ?? 0;
-    }
-
-
-    if(($totalCost > $this->user->available_balance)){
+    if ($this->user->id_user_group == 3 && ($totalCost > $this->user->wallet->available_balance)) {
       return redirect()->route('messages.create')->with('error', 'Insufficient balance');
     }
 
+    //if ($this->user->id_user_group == 4 && ($totalCost > $this->user->reseller->wallet->available_balance || $totalCost > $this->user->reseller->wallet->available_balance)) {
+      //return redirect()->route('messages.create')->with('error', 'Insufficient balance');
+    //}
+
+    $user_id = Auth::user()->id;
+    $currentBalance = User::where('id', $user_id)->first()->available_balance;
 
     $request->merge(['totalPhoneNumber' => $totalPhoneNumber]);
+    $msmCount = $this->countSms($request->message_text);
+    $balance = ($msmCount->count * $totalPhoneNumber) * $this->user->smsRate->nonmasking_rate;
+
+    if($balance > $currentBalance){
+      return redirect()->route('messages.create')->with('success', 'Insufficient balance');
+    }
+
     if ($this->messageRepository->saveRegularMessage($request->all())) {
+
+      $user = User::find(auth()->id());
+      if ($user) {
+          $user->available_balance -= $balance;
+          $user->save();
+      }
+
       return redirect()->route('messages.create')->with('success', 'Message sent successfully');
     } else {
       return redirect()->route('messages.create')->with('error', 'Failed to send message');
     }
+  }*/
+
+  public function storeRegularMessage(Request $request): RedirectResponse
+  {
+    Log::info('Store Regular Message Request: ', ['request' => $request->all()]);
+    $request->validate([
+        'sender_id' => 'required',
+        'recipient_number' => 'required',
+    ]);
+
+    // Continue with the rest of your logic
+    $totalPhoneNumber = count(explode(",", rtrim($request->recipient_number, ',')));
+
+    $user_id = Auth::user()->id;
+    $currentBalance = User::where('id', $user_id)->first()->available_balance;
+
+    $request->merge(['totalPhoneNumber' => $totalPhoneNumber]);
+    $msmCount = $this->countSms($request->message_text);
+    $balance = ($msmCount->count * $totalPhoneNumber) * $this->user->smsRate->nonmasking_rate;
+
+    if($balance > $currentBalance){
+        return redirect()->route('messages.create')->with('error', 'Insufficient balance');
+    }
+    $status = $this->messageRepository->saveRegularMessage($request->all());
+
+    if ($status == true) {
+
+        $user = User::find(auth()->id());
+        if ($user) {
+            $user->available_balance -= $balance;
+            $user->save();
+        }
+
+        return redirect()->route('messages.create')->with('success', 'Message sent successfully');
+    } else {
+        return redirect()->route('messages.create')->with('success', 'Failed to send message');
+    }
   }
+
 
   public function storeGroupMessage(Request $request): RedirectResponse
   {
-    if ($request->isScheduleMessage == '1') {
-      $scheduleDateTime = \Carbon\Carbon::createFromFormat(
-          'Y-m-d H:i',
-          $request->scheduleDate . ' ' . $request->scheduleTime,
-          'Asia/Dhaka' // Set BD timezone
-      );
-      if ($scheduleDateTime->isPast()) {
-            return redirect()->route('messages.create')->with('error', 'Scheduled time must be in the future');
-        }
-    }
+
     $request->validate([
       'sender_id' => 'required'
     ]);
@@ -144,23 +148,11 @@ class MessagesController extends Controller
     $groupIds = $request->group_ids;
 
     $groupPhones = DB::table('contacts')
-      ->whereIn('group_id', $groupIds)
-      ->pluck('phone')
-      ->toArray();
+                    ->whereIn('group_id', $groupIds)
+                    ->pluck('phone')
+                    ->toArray();
 
     $groupPhoneNo = implode(', ', $groupPhones);
-    if($request->dnd && $request->dnd == '1') {
-      $dndNumbers = DB::table('dnds')->where('user_id', auth()->user()->id)->pluck('phone')->toArray();
-      // dd($groupPhoneNo);
-      $numbers = explode(", ", $groupPhoneNo);
-      $filteredNumbers = array_filter($numbers, function ($num) use ($dndNumbers) {
-        return !in_array($num, $dndNumbers);
-      });
-      $groupPhoneNo = implode(", ", $filteredNumbers);
-    }else{
-      // merge into request
-      $request->merge(['dnd' => '0']);
-    }
 
     $request->merge(['recipient_number' => $groupPhoneNo]);
     $total_recipient = count($groupPhones);
@@ -170,21 +162,44 @@ class MessagesController extends Controller
     $currentBalance = User::where('id', $user_id)->first()->available_balance;
 
     $msmCount = $this->countSms($request->message_text);
-
-    if($request->masking_type == 'Masking'){
-      $balance = ($msmCount->count * $total_recipient) * intval($this->user->smsRate->masking_rate??0);
-    }else{
-      $balance = ($msmCount->count * $total_recipient) * intval($this->user->smsRate->nonmasking_rate??0);
-    }
-
+    $balance = ($msmCount->count * $total_recipient) * $this->user->smsRate->nonmasking_rate;
     if($balance > $currentBalance){
-      return redirect()->route('messages.create')->with('error', 'Insufficient balance');
+      return redirect()->route('messages.create')->with('success', 'Insufficient balance');
     }
 
-    if ($this->messageRepository->saveGroupMessage($request->all())) {
-      return redirect()->route('messages.create')->with('success', 'Message sent successfully');
+    /*if ($this->messageRepository->saveGroupMessage($request->all())) {
+
+        $user = User::find(auth()->id());
+        if ($user) {
+            $user->available_balance -= $balance;
+            $user->save();
+        }
+
+        return redirect()->route('messages.create')->with('success', 'Message sent successfully');
     } else {
-      return redirect()->route('messages.create')->with('error', 'Failed to send message');
+        return redirect()->route('messages.create')->with('error', 'Failed to send message');
+    }*/
+
+    $status = $this->messageRepository->saveGroupMessage($request->all());
+
+    /*if($status == 404){
+      return redirect()->route('messages.create')->with('success', 'Message sent successfully');
+    }
+
+    if($status == 500){
+      return redirect()->route('messages.create')->with('success', 'Unknown error occurred');
+    }*/
+    if ($status == true) {
+
+        $user = User::find(auth()->id());
+        if ($user) {
+            $user->available_balance -= $balance;
+            $user->save();
+        }
+
+        return redirect()->route('messages.create')->with('success', 'Message sent successfully');
+    } else {
+        return redirect()->route('messages.create')->with('success', 'Failed to send message');
     }
   }
 
@@ -192,79 +207,47 @@ class MessagesController extends Controller
   {
     $title = 'Send New Message';
     $senderIds = $this->senderIdRepository->getSenderIds();
-    $maskList = null;
     $templates = $this->templateRepository->getTemplates();
     $groups = $this->groupRepository->getGroups();
-    $available_balance = User::where('id', auth()->id())->first()->available_balance;
 
-    return view('messages::message.create', compact('title', 'senderIds', 'maskList', 'templates', 'groups', 'available_balance'));
+    $available_balance = User::where('id', auth()->id())->first()->available_balance;
+    return view('messages::message.create', compact('title', 'senderIds', 'templates', 'groups', 'available_balance'));
   }
 
   public function storeFileMessage(Request $request)
   {
-    if ($request->isScheduleMessage == '1') {
-      $scheduleDateTime = \Carbon\Carbon::createFromFormat(
-          'Y-m-d H:i',
-          $request->scheduleDate . ' ' . $request->scheduleTime,
-          'Asia/Dhaka' // Set BD timezone
-      );
-      if ($scheduleDateTime->isPast()) {
-            return redirect()->route('messages.create')->with('error', 'Scheduled time must be in the future');
+
+    $request->validate([
+      'sender_id' => 'required'
+    ]);
+
+    $smsStatus = $this->messageRepository->createFileMessage($request->all());
+
+    /*if($smsStatus == false){
+      return redirect()->route('messages.create')->with('success', 'Insufficient balance');
+    }
+
+    return redirect()->route('messages.create')->with('success', 'Message sent successfully');*/
+    $status = $this->messageRepository->saveGroupMessage($request->all());
+
+    /*if($status == 404){
+      return redirect()->route('messages.create')->with('success', 'Message sent successfully');
+    }
+
+    if($status == 500){
+      return redirect()->route('messages.create')->with('success', 'Unknown error occurred');
+    }*/
+    if ($status == true) {
+
+        $user = User::find(auth()->id());
+        if ($user) {
+            $user->available_balance -= $balance;
+            $user->save();
         }
-    }
-    $totalRecipients = $request->totalMobileNumbers ?? 0;
-    $currentBalance = User::where('id', $this->user->id)->first()->available_balance;
 
-    $smsCount = $this->countSms($request->message_text);
-
-    if($request->masking_type == 'Masking'){
-      $totalMessageCost = ($smsCount->count * $totalRecipients) * doubleval($this->user->smsRate->masking_rate ?? 0);
-    }else{
-      $totalMessageCost = ($smsCount->count * $totalRecipients) * doubleval($this->user->smsRate->nonmasking_rate ?? 0);
-    }
-
-    if ($totalMessageCost > $currentBalance) {
-      return redirect()->route('messages.create')->with('error', 'Insufficient balance');
-    }
-
-    if ($this->messageRepository->createFileMessage($request)) {
-      return redirect()->route('messages.create')->with('success', 'Message sent successfully');
+        return redirect()->route('messages.create')->with('success', 'Message sent successfully');
     } else {
-      return redirect()->route('messages.create')->with('error', 'Failed to send message');
-    }
-  }
-
-  public function storeDynamicMessageActual(Request $request)
-  {
-    if ($request->isScheduleMessage == '1') {
-      $scheduleDateTime = \Carbon\Carbon::createFromFormat(
-        'Y-m-d H:i',
-        $request->scheduleDate . ' ' . $request->scheduleTime,
-        'Asia/Dhaka' // Set BD timezone
-      );
-      if ($scheduleDateTime->isPast()) {
-        return redirect()->route('messages.create')->with('error', 'Scheduled time must be in the future');
-      }
-    }
-    $totalRecipients = $request->totalMobileNumbers ?? 0;
-    $currentBalance = User::where('id', $this->user->id)->first()->available_balance;
-    
-    $smsCount = $this->countSms($request->message_text);
-    
-    if($request->masking_type == 'Masking'){
-      $totalMessageCost = ($smsCount->count * $totalRecipients) * doubleval($this->user->smsRate->masking_rate ?? 0);
-    }else{
-      $totalMessageCost = ($smsCount->count * $totalRecipients) * doubleval($this->user->smsRate->nonmasking_rate ?? 0);
-    }
-    
-    if ($totalMessageCost > $currentBalance) {
-      return redirect()->route('messages.create')->with('error', 'Insufficient balance');
-    }
-
-    if ($this->messageRepository->createDynamicMessage($request)) {
-      return redirect()->route('messages.create')->with('success', 'Message sent successfully');
-    } else {
-      return redirect()->route('messages.create')->with('error', 'Failed to send message');
+        return redirect()->route('messages.create')->with('success', 'Failed to send message');
     }
   }
 
@@ -286,5 +269,23 @@ class MessagesController extends Controller
   {
     $this->messageRepository->create($request->all());
     return redirect()->route('messages-inbox.index')->with('success', 'Message sent successfully');
+  }
+
+  public function getTotalMobileNumbers(Request $request)
+  {
+
+	$groupIds = $request->input('group_ids');
+
+	if ($groupIds) {
+
+		$totalMobileNumbers = DB::table('contacts')
+                                ->whereIn('group_id', $groupIds)
+                                ->whereNotNull('phone')
+                                ->count();
+	} else {
+		$totalMobileNumbers = 0;
+	}
+
+	return response()->json(['total_mobile_numbers' => $totalMobileNumbers]);
   }
 }
