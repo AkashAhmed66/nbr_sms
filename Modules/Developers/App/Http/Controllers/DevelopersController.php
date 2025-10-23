@@ -73,7 +73,8 @@ class DevelopersController extends Controller
   {
     $api_key = Auth::user()->APIKEY;
 
-    $senderId = SenderId::where(['user_id' => Auth::user()->id, 'status' => 'Active'])->first();
+    // $senderId = SenderId::where(['user_id' => Auth::user()->id, 'status' => 'Active'])->first();
+    $senderId = SenderId::where(['status' => 'Active'])->first();
     if (!$senderId) {
         $senderId = 'No active sender ID found';
     } else {

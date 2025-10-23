@@ -2,24 +2,26 @@
 
 namespace Modules\API\App\Repositories;
 
-use App\Jobs\SendMessageToInfozillionJob;
-use App\Services\SocketServiceBackup;
+use App\Services\SocketService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Modules\API\App\Repositories\CustomerApiRepositoryInterface;
 use Modules\Messages\App\Models\Message;
 use Modules\Messages\App\Models\Outbox;
 use Modules\Messages\App\Models\OutboxHistory;
+use Modules\Messages\App\Models\SMSRecord;
 use Modules\Messages\App\Trait\SmsCountTrait;
-use Modules\Smsconfig\App\Models\Mask;
-use Modules\Smsconfig\App\Models\SenderId;
 use Modules\Users\App\Models\User;
+use Modules\SmsConfig\App\Models\Rate;
 
 class CustomerApiRepository implements CustomerApiRepositoryInterface
 {
   use SmsCountTrait;
 
-  public function __construct(Message $message, Outbox $outbox, OutboxHistory $outboxHistory, SocketServiceBackup $socketService)
+  public function __construct(Message $message, Outbox $outbox, OutboxHistory $outboxHistory, SocketService $socketService)
   {
     $this->message = $message;
     $this->outbox = $outbox;
@@ -28,151 +30,216 @@ class CustomerApiRepository implements CustomerApiRepositoryInterface
     $this->user = Auth::user();
   }
 
+  private function microseconds(): int
+  {
+    $mt = explode(' ', microtime());
+    return intval($mt[1] * 1E6) + intval(round($mt[0] * 1E6));
+  }
+
   public function sendMessage($request, $userInfo)
   {
+
     try {
-      $phoneNumbersString = $this->filterPhoneNumbers($request->numbers);
 
-      if (empty($phoneNumbersString)) {
-        return [
-          'error' => true,
-          'error_message' => 'No recipient found',
-          'error_code' => 1010,
-        ];
-      }
+        $phoneNumbersString = $this->filterPhoneNumbers($request->numbers);
 
-      $senderIds = SenderId::pluck('senderID')->toArray();
+        if (empty($phoneNumbersString)) {
+          return [
+              'error' => true,
+              'error_message' => 'No recipient found',
+              'error_code' => 1010,
+          ];
+        }
 
-      if($userInfo->id_user_group != 1){
-        $users = User::where('created_by', $userInfo->id)->pluck('id')->toArray();
-        $users[] = $userInfo->id;
-        $senderIds = SenderId::whereIn('user_id', $users)->pluck('senderID')->toArray();
-      }
-      
-      $masks = Mask::pluck('mask')->toArray();
-      
-      if($userInfo->id_user_group != 1){
-        $users = User::where('created_by', $userInfo->id)->pluck('id')->toArray();
-        $users[] = $userInfo->id;
-        $masks = Mask::whereIn('user_id', $users)->pluck('mask')->toArray();
-      }
+        $totalPhoneNumber = count(explode(',', $phoneNumbersString));
 
-      // dd(!in_array($request->senderid, $senderIds), !in_array($request->senderid, $masks));
-      if (!in_array($request->senderid, $senderIds) and !in_array($request->senderid, $masks)) {
-        return [
-          'error' => true,
-          'error_message' => 'Sender ID not found',
-          'error_code' => 1002 ,
-        ];
-      }
+        $message = $request->msg;
+        //$recipients = $request->numbers;
+        //$totalNumber = count(explode(",", $recipients));
+        $smsInfo = $this->countSms($message);
 
+        $countSms = $smsInfo->count;
+        //$totalMessage = $totalNumber * $countSms;
 
-      $phoneNumbersArray = explode(',', $phoneNumbersString);
-      $totalPhoneNumber = count($phoneNumbersArray);
-      $message = $request->msg;
-      $smsInfo = $this->countSms($message);
-      $countSms = $smsInfo->count;
-      $currentBalance = User::where('id', $userInfo->id)->first();
-      $smsRate = DB::table('rates')->where('id', $currentBalance->sms_rate_id)->first();
-
-      if (strlen($request->senderid) == 13) {
-        $isMasking = 0;
+        $currentBalance = User::where('id',  $userInfo->id)->first();
+        $smsRate = DB::table('rates')->where('id', $currentBalance->sms_rate_id)->first();
+        //$smsRate = Rate::where('id', $currentBalance->sms_rate_id)->first();
         $balance = ($countSms * $totalPhoneNumber) * $smsRate->nonmasking_rate;
-      } else {
-        $isMasking = 1;
-        $balance = ($countSms * $totalPhoneNumber) * $smsRate->masking_rate;
-      }
+        //dd($countSms);
 
-      if ($balance > $currentBalance->available_balance) {
-        return [
-          'error' => true,
-          'error_message' => 'Insufficient balance',
-          'error_code' => 1020,
-        ];
+        if($balance > $currentBalance->available_balance){
+          return [
+              'error' => true,
+              'error_message' => 'Insufficient balance',
+              'error_code' => 1020,
+          ];
 
-      }
-
-      $isUnicode = $this->getSMSType($message) == 'unicode' ? 1 : 0;
-
-      $sendMessage = null;
-      foreach($phoneNumbersArray as $number) {
+        }
         $orderid = $userInfo->id . $this->microseconds();
         $api_data = array(
-          'user_id' => $userInfo->id,
-          'message' => $message,
-          'recipient' => $number,
-          'senderID' => $request->isMethod('get') ? $request->senderid : "",
-          'date' => date('Y-m-d H:i:s'),
-          'source' => 'API',
-          'sms_count' => $smsInfo->count,
-          //'IP' => \http\Env\Request::getClientIp(),
-          'sms_type' => 'sendSms',
-          'orderid' => $orderid,
-          'file' => null,
-          'is_unicode' => $isUnicode,
-          'status' => 'Queue',
-          'total_recipient' => 1,
-          'template_type' => 2
+            'user_id' => $userInfo->id,
+            'message' => $message,
+            'recipient' => $phoneNumbersString,
+            'senderID' => $request->isMethod('get') ? $request->senderid : "",
+            'date' => date('Y-m-d H:i:s'),
+            'source' => 'API',
+            'sms_count' => $smsInfo->count,
+            //'IP' => \http\Env\Request::getClientIp(),
+            'sms_type' => 'sendSms',
+            'orderid' => $orderid,
+            'file' => null,
+            'is_unicode' => 1,
+            'status' => 'Queue',
+            'total_recipient' => $totalPhoneNumber,
+            'template_type' => 2
         );
 
         $sendMessage = Message::create($api_data);
-        $apiResponse = $this->saveToOutbox($number, $message, $request->senderid, $smsInfo->count, $userInfo->id, $sendMessage->id, $isMasking, $isUnicode);
-        /*if ($apiResponse === true) {
+        $apiResponse = $this->saveToOutbox($phoneNumbersString, $message, $request->senderid, $smsInfo->count, $userInfo->id, $sendMessage->id);
+
+        //$apiResponse = $this->callReveApi($recipients, $message, $request->senderid, $userInfo->id);
+        //$responseData = $apiResponse->getData(true);
+        if (isset($apiResponse['Message_IDs'])) {
+
+          if ($apiResponse['Status']['Text'] == "ACCEPTD" && $apiResponse['Status']['Status'] == 0) {
+
+              $currentBalance->available_balance -= $balance;
+              $currentBalance->save();
+
+              Outbox::where('reference_id', $sendMessage->id)
+                      ->update(['status' => 'ACCEPTD', 'reason' => 'sms request successfull']);
+              Message::where('id', $sendMessage->id)
+                      ->update(['status' => 'ACCEPTD']);
+          }
+
+          if ($apiResponse['Status']['Status'] == 4) {
+
+            Outbox::where('reference_id', $sendMessage->id)
+                  ->update(['status' => 'SENT', 'reason' => 'request sent']);
+            Message::where('id', $sendMessage->id)
+                  ->update(['status' => 'SENT']);
+          }
+          if ($apiResponse['Status']['Status'] == 2) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'QUEUED', 'reason' => 'request pending']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'QUEUED']);
+          }
+          if ($apiResponse['Status']['Status'] == 1) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'QUEUED', 'reason' => 'request failed']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'QUEUED']);
+          }
+          if ($apiResponse['Status']['Status'] == -42) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED', 'reason' => 'Authorization failed']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED']);
+          }
+          if ($apiResponse['Status']['Status'] == 101) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED', 'reason' => 'Internal server erros occurs']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED']);
+          }
+          if ($apiResponse['Status']['Status'] == 114) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED', 'reason' => 'Message id it not provided']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED']);
+          }
+          if ($apiResponse['Status']['Status'] == 108) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED', 'reason' => 'Wrong password']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED']);
+          }
+          if ($apiResponse['Status']['Status'] == 109) {
+
+              Outbox::where('reference_id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED', 'reason' => 'API key is not provided']);
+              Message::where('id', $sendMessage->id)
+                    ->update(['status' => 'REJECTED']);
+          }
+
+          Log::info('SMS API Response: ' . json_encode($apiResponse));
+
+          $messageIds = $apiResponse['Message_IDs'];
           return [
-            'error' => false,
-            'message' => 'Messages sent successfully',
-            'message_id' => $sendMessage->orderid
+              'error' => false,
+              'message' => 'Messages sent successfully',
+              'message_id' => $messageIds
           ];
+
+
+        //echo '<pre>';print_r($apiResponse['Status']['Text']);exit;
+
+        /*if (isset($apiResponse['Message_IDs'])) {
+          Outbox::where('reference_id', $sendMessage->id)
+                ->update(['status' => 'Sent']);
+          Message::where('id', $sendMessage->id)
+              ->update(['status' => 'Sent']);
+            $messageIds = $apiResponse['Message_IDs'];*/
 
         } else {
-          return [
-            'error' => true,
-            'error_message' => 'Failed to send messages',
-            'error_code' => 1016
-          ];
+            return [
+                'error' => true,
+                'error_message' => $apiResponse['Text'] ?? 'Failed to send messages',
+                'error_code' => 1016
+            ];
+        }
+
+        /*if ($statusCode == 200) {
+
+            Outbox::where('reference_id', $sendMessage->id)
+                          ->update(['status' => 'Sent']);
+            Message::where('id', $sendMessage->id)
+                          ->update(['status' => 'Sent']);
+            return [
+                'error' => false,
+                'message_id' => $orderid,
+                'message' => 'Your SMS is successfully submitted',
+            ];
+        } else {
+            return [
+                'error' => true,
+                'error_message' => 'Message sending failed',
+                'error_code' => 1014,
+            ];
         }*/
-      }
-
-      return [
-        'error' => false,
-        'message' => 'Messages sent successfully',
-        'message_id' => $sendMessage->orderid
-      ];
-
-
-
     } catch (\Exception $e) {
-      return [
-        'error' => true,
-        'error_message' => 'An unexpected error occurred: ' . $e->getMessage(),
-        'error_code' => 1015,
-      ];
+        return [
+            'error' => true,
+            'error_message' => 'An unexpected error occurred: ' . $e->getMessage(),
+            'error_code' => 1015,
+        ];
     }
   }
 
 
-  public function saveToOutbox($destmn, $message, $senderID, $totalMessage, $userId, $sendMessageId, $isMasking, $isUnicode)
+
+  public function saveToOutbox($recipients, $message, $senderID, $totalMessage, $userId, $sendMessageId)
   {
     date_default_timezone_set('Asia/Dhaka');
-    //$recipientList = explode(",", $recipients);
-    $priority = $this->getPriority([$destmn]);
-    //$outboxPayloadArray = [];
+    $recipientList = explode(",", $recipients);
+    $priority = $this->getPriority($recipientList);
+    $outboxPayloadArray = [];
     $user = User::where('id', $userId)->first();
-
-    if ($isMasking == 1) {
-      $totalMessageCost = doubleval(@$user->smsRate->masking_rate * $totalMessage);
-    } else {
-      $totalMessageCost = doubleval(@$user->smsRate->nonmasking_rate * $totalMessage);
-    }
-
     $commaSeparated = '';
-    //foreach ($recipientList as $key => $destmn) {
-      //$operatorName = $this->getOperatorName($destmn);
+    foreach ($recipientList as $key => $destmn) {
+      $operatorName = $this->getOperatorName($destmn);
       $outboxPayload = [
         "srcmn" => $senderID,
         "mask" => $senderID,
         "destmn" => trim($destmn),
-        //"operator_name" => $operatorName,
+        "operator_name" => $operatorName,
         "message" => $message,
         "country_code" => NULL,
         "operator_prefix" => $this->getPrefix($destmn),
@@ -182,10 +249,10 @@ class CustomerApiRepository implements CustomerApiRepositoryInterface
         "ton" => 5,
         "npi" => 1,
         "message_type" => 'text',
-        "is_unicode" => $isUnicode,
+        "is_unicode" => $request->isUnicode ?? false,
         "smscount" => $totalMessage,
         "esm_class" => '',
-        "data_coding" => $isUnicode == 1 ? 8 : 0, // 8 for Unicode, 0 for GSM
+        "data_coding" => $request->dataCoding ?? '',
         "reference_id" => $sendMessageId,
         "last_updated" => date('Y-m-d H:i:s'),
         "schedule_time" => NULL,
@@ -199,92 +266,191 @@ class CustomerApiRepository implements CustomerApiRepositoryInterface
         "updated_at" => date('Y-m-d H:i:s'),
         "error_code" => NULL,
         "error_message" => NULL,
-        // "dlr_status_code" => null,
-        "dlr_status" => null,
-        "dlr_status_meaning" => null,
-        "sms_cost" => $totalMessageCost,
-        "sms_uniq_id" => "MNBL " . date('Ymdhis') . '-' . trim($destmn) . '-' . '0000000001',  //module division by 999999999
+        "sms_cost" => doubleval(@$user->smsRate->nonmasking_rate),
+        "sms_uniq_id" => "NBR " . date('Ymdhis') . '-' . trim($destmn) . '-' . '0000000001',  //module division by 999999999
       ];
 
-      $outbox = Outbox::create($outboxPayload);
-      $outbox_id = $outbox->id;
+        $outbox = Outbox::create($outboxPayload);
+        $outbox_id = $outbox->id;
+        //dd($outbox_id);
 
-      //Balance deduction
-      $user->available_balance -= $totalMessageCost;
-      $user->save();
+        $aggregator = env('Aggregator');
+
+        if($aggregator == 'gbarta'){
+          $response = Http::post('https://gbarta.gennet.com.bd/api/v1/smsapi', [
+              'api_key'  => env('GBARTA_SMS_SECRET_KEY'),
+              'type'     => 'text',
+              'senderid' => env('GBARTA_SENDER_ID'),
+              'msg'      => $message,
+              'numbers'  => $destmn,
+          ]);
+
+          Log::info('Gbarta SMS API Response: ', ['response' => $response->body()]);
+
+          // Optional: Check if the request was successful
+          if ($response->successful()) {
+              $responsedata = $response->json();
+    
+              $messageIds = explode(',', $responsedata['message_id']);
+              if($commaSeparated == ''){
+                $commaSeparated .= $responsedata['message_id'];
+              } else {
+                $commaSeparated .= ','.$responsedata['message_id'];
+              }
 
 
-      if (env('APP_TYPE') == 'Aggregator') {
-        // if(($isMasking == '1')){
-        //   $company = "grameenphone"; //Will be changed later
-        //   $recipients = [$destmn];
-        //   $message = $message;
-        //   $messageType = 1;
-        //   $cli = $senderID;
-        //   if($outbox->is_unicode == '1'){
-        //     $messageType = 3;
-        //   }
-        //   SendMaskedMessageJob::dispatch($company, $recipients, $message, $messageType, $cli);
-        // } else {
-
-          if (!str_starts_with($destmn, '88')) {
-            if (str_starts_with($destmn, '+88')) {
-              $destmn = substr($destmn, 1); // remove '+' only
-            } else {
-              $destmn = '88' . $destmn;
-            }
+              $formattedResponse = array_map(function ($messageId) use ($outbox_id, $message, $userId) {
+                  return [
+                      'user_id' => $userId,
+                      'outbox_id' => $outbox_id,
+                      'status' => "Message Submitted",
+                      'text' => $message,
+                      'message_id' => $messageId,                
+                      'created_at' => now(),
+                      'updated_at' => now(),
+                  ];
+              }, $messageIds);
+    
+              SmsRecord::insert($formattedResponse);
+              
+              $responsedata = [
+                  'Status' => '0',
+                  'Text' => 'ACCEPTD',
+                  'Message_ID' => $messageIds[0]
+              ];
           }
+          
+        } else {
+          $response = Http::get('http://smpp.revesms.com:7788/send', [
+              'apikey' => env('SMS_API_KEY'),
+              'secretkey' => env('SMS_SECRET_KEY'),
+              'content' => json_encode([
+                  [
+                      'callerID' => $senderID,
+                      'toUser' => $destmn,
+                      'messageContent' => $message
+                  ]
+              ])
+          ]);
+  
+          if ($response->successful()) {
+            $responsedata = $response->json();
+  
+            $messageIds = explode(',', $responsedata['Message_ID']);
+            if($commaSeparated == ''){
+              $commaSeparated .= $responsedata['Message_ID'];
+            } else {
+              $commaSeparated .= ','.$responsedata['Message_ID'];
+            }
+            //$commaSeparated = rtrim($commaSeparated, ',');
+            $formattedResponse = array_map(function ($messageId) use ($userId, $responsedata, $outbox_id) {
+                return [
+                    'user_id' => $userId,
+                    'outbox_id' => $outbox_id,
+                    'status' => $responsedata['Status'],
+                    'text' => $responsedata['Text'],
+                    'message_id' => $messageId,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+            }, $messageIds);
+  
+            SmsRecord::insert($formattedResponse);
+  
+          }
+        }
 
-          $numbers = [$destmn];
+    }
+    Log::info('SMS Records inserted for Outbox ID: ' . json_encode($responsedata));
 
-          $infozillion_array = array('msisdnList' => $numbers, 'message' => $message, 'campaign_id' => "100001");
-          $infozillion_array['transactionType'] = count($numbers) > 1 ? 'P' : 'T';
-          // $infozillion_array['transactionType'] = 'T';
-          $infozillion_array['cli'] = $senderID;
-          $infozillion_array['isunicode'] = $isUnicode;
-
-          //$this->sendMessageToInfozilion($infozillion_array);
-          SendMessageToInfozillionJob::dispatch($infozillion_array, $sendMessageId);
-        // }
-      }
-    //}
-
-  return true;
-
+    return [
+        'Status' => $responsedata,
+        'Text' => 'Message sent successfully',
+        'Message_IDs' => $commaSeparated // Returning the message IDs
+    ];
   }
+
+  /*public function callReveApi($toUsers, $messageContent, $callerID, $userID){
+
+    if (!$callerID || !$toUsers || !$messageContent) {
+      return response()->json(['Status' => '114', 'Text' => 'REJECTD']);
+    }
+
+    //$toUsers = is_array($toUsers) ? implode(',', $toUsers) : $toUsers;
+
+    $response = Http::get('http://smpp.revesms.com:7788/send', [
+      'apikey' => env('SMS_API_KEY'),
+      'secretkey' => env('SMS_SECRET_KEY'),
+      'content' => json_encode([
+        [
+          'callerID' => $callerID,
+          'toUser' => $toUsers,
+          'messageContent' => $messageContent
+        ]
+      ])
+    ]);
+
+    if($response->successful()) {
+      $data = $response->json();
+      $data['user_id'] = $userID;
+      $messageIds = explode(',', $data['Message_ID']);
+
+      $formattedResponse = array_map(function ($messageId) use ($data) {
+        return [
+          'status' => $data['Status'],
+          'text' => $data['Text'],
+          'message_id' => $messageId,
+          'user_id' => $data['user_id'],
+          'created_at' => now(),
+          'updated_at' => now(),
+        ];
+      }, $messageIds);
+
+      SmsRecord::insert($formattedResponse);
+      return [
+        'Status' => $data,
+        'Text' => 'Message sent successfully',
+        'Message_IDs' => $messageIds // Returning the message IDs
+    ];
+      //dd('Data saved successfully');
+    } else {
+
+      return false;
+    }
+  }*/
 
   public function filterPhoneNumbers($recipientNumbers)
   {
-    $prefixArray = ['88017', '88019', '88016', '88015', '88013', '88014', '88018', '017', '019', '016', '015', '013', '014', '018'];
+        $prefixArray = ['88017', '88019', '88016', '88015', '88013', '88014', '88018', '017', '019', '016', '015', '013', '014', '018'];
 
-    $phoneNumbers = explode(',', $recipientNumbers);
-    $phoneNumbers = array_filter(array_map('trim', $phoneNumbers));
+        $phoneNumbers = explode(',', $recipientNumbers);
+        $phoneNumbers = array_filter(array_map('trim', $phoneNumbers));
 
-    $valid13Numbers = [];
-    $valid11Numbers = [];
+        $valid13Numbers = [];
+        $valid11Numbers = [];
 
-    foreach ($phoneNumbers as $number) {
+        foreach ($phoneNumbers as $number) {
 
-      if (strlen($number) == 13) {
-        $prefix = substr($number, 0, 5);
-        if (in_array((int) $prefix, $prefixArray)) {
-          $valid13Numbers[] = $number;
+            if (strlen($number) == 13) {
+                $prefix = substr($number, 0, 5);
+                if (in_array((int)$prefix, $prefixArray)) {
+                    $valid13Numbers[] = $number;
+                }
+            }
         }
-      }
-    }
 
-    foreach ($phoneNumbers as $number) {
-      if (strlen($number) == 11) {
-        $prefix = substr($number, 0, 3);
-        if (in_array((int) $prefix, $prefixArray)) {
-          $valid11Numbers[] = $number;
+        foreach ($phoneNumbers as $number) {
+            if (strlen($number) == 11) {
+              $prefix = substr($number, 0, 3);
+                if (in_array((int)$prefix, $prefixArray)) {
+                    $valid11Numbers[] = $number;
+                }
+            }
         }
-      }
-    }
 
-    $phoneNumbersArray = array_merge($valid11Numbers, $valid13Numbers);
-    $phoneNumbersString = implode(",", $phoneNumbersArray);
-    return $phoneNumbersString;
+        $phoneNumbersArray = array_merge($valid11Numbers, $valid13Numbers);
+        $phoneNumbersString = implode(",", $phoneNumbersArray);
+        return $phoneNumbersString;
   }
 
   public function getPrefix($destmn)
@@ -343,8 +509,9 @@ class CustomerApiRepository implements CustomerApiRepositoryInterface
     return 'Unknown';
   }
 
-  public function getBalance($userId)
+  public function getBalance()
   {
+    // Get balance
   }
 
   public function getDLR()
@@ -360,29 +527,5 @@ class CustomerApiRepository implements CustomerApiRepositoryInterface
   public function getUnreadReplies()
   {
     // Get unread replies
-  }
-
-  private function microseconds(): int
-  {
-    $mt = explode(' ', microtime());
-    return intval($mt[1] * 1E6) + intval(round($mt[0] * 1E6));
-  }
-
-  function getSMSType(string $usrSms): string
-  {
-    $usrSms = trim($usrSms);
-
-    // Check for Unicode characters (non-ASCII)
-    if (preg_match('/[^\x00-\x7F]+/', $usrSms)) {
-      return 'unicode';
-    }
-
-    // Check for GSM extended characters
-    if (preg_match('/(\x0C|\^|\{|\}|\\\\|\[|~|\]|\||€)/u', $usrSms)) {
-      return 'gsmextended';
-    }
-
-    // Default to plain text
-    return 'plaintext';
   }
 }
