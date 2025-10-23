@@ -91,11 +91,11 @@
                       aria-selected="false"><span class="ri-file-text-line ri-20px d-sm-none"></span><span
                   class="d-none d-sm-block">File Message</span></button>
             </li>
-            <li class="nav-item">
+            {{-- <li class="nav-item">
               <button class="nav-link" data-bs-toggle="tab" data-bs-target="#form-tabs-file-message-actual" role="tab"
                       aria-selected="false"><span class="ri-code-s-slash-line ri-20px d-sm-none"></span><span
                   class="d-none d-sm-block">Dynamic Message</span></button>
-            </li>
+            </li> --}}
           </ul>
         </div>
 
@@ -109,9 +109,9 @@
           <div class="tab-pane fade" id="form-tabs-file-message" role="tabpanel">
             @include('messages::message.file-message')
           </div>
-          <div class="tab-pane fade" id="form-tabs-file-message-actual" role="tabpanel">
+          {{-- <div class="tab-pane fade" id="form-tabs-file-message-actual" role="tabpanel">
             @include('messages::message.dynamic-message-actual')
-          </div>
+          </div> --}}
         </div>
 
       </div>
