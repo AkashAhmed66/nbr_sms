@@ -87,6 +87,7 @@ class Message extends Model
     'ansSendSmsBusinessCode',
     'mnoResponseCode',
     'mnoResponseMessage',
+    'template_type',
   ];
 
   protected static function newFactory()
