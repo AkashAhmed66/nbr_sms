@@ -16,7 +16,7 @@ use Modules\Developers\App\Http\Controllers\DevelopersController;
 
 Route::middleware(['auth'])->group(function () {
   Route::group(['prefix' => 'developer'], function () {
-    // Route::get('api-info', [DevelopersController::class, 'apiInfo'])->name('api-info');
+    Route::get('api-info', [DevelopersController::class, 'apiInfo'])->name('api-info');
     Route::post('/update-api-key', [DevelopersController::class, 'updateKey'])->name('update.api.key');
   });
 });
