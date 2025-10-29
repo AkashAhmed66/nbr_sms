@@ -24,6 +24,7 @@ class Kernel extends ConsoleKernel
             // $schedule->command('retry:process')->everyTenMinutes();
             $schedule->command('send:infozilion-dlr-status-update')->everyMinute();
         }
+        $schedule->command('gbarta:fetch-dlr')->everyMinute();
     }
 
     /**

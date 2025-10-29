@@ -37,7 +37,7 @@ class ReportsController extends Controller
 
     if ($request->ajax()) {
       $reports = $this->reportRepository->getLast2DaysFailedSmsList($request);
-
+            
       return datatables()->eloquent($reports)
         ->addIndexColumn()
         ->editColumn('name', fn($row) => $row->user?->name ?? '')
