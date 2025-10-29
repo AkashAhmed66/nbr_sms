@@ -60,6 +60,7 @@ class ReportsController extends Controller
         ->editColumn('error_message', fn($row) => $this->getDlrStatusInfo($row->dlr_status_code))
         ->editColumn('source', fn($row) => $row->sendMessage?->source ?? '')
         ->editColumn('campaign_name', fn($row) => $row->sendMessage?->campaign_name ?? '')
+        ->editColumn('dlr_status', fn($row) => $row->dlr_status ?? 'Message Submitted')
         ->make(true);
     }
 
@@ -101,6 +102,7 @@ class ReportsController extends Controller
         ->editColumn('error_code', fn($row) => $row->dlr_status_code ?? '')
         ->editColumn('error_message', fn($row) => $this->getDlrStatusInfo($row->dlr_status_code))
         ->editColumn('source', fn($row) => $row->sendMessage?->source ?? '')
+        ->editColumn('dlr_status', fn($row) => $row->dlr_status ?? 'Message Submitted')
         ->make(true);
     }
 
@@ -145,6 +147,7 @@ class ReportsController extends Controller
         ->editColumn('error_code', fn($row) => $row->dlr_status_code ?? '')
         ->editColumn('error_message', fn($row) => $this->getDlrStatusInfo($row->dlr_status_code))
         ->editColumn('source', fn($row) => $row->sendMessage?->source ?? '')
+        ->editColumn('dlr_status', fn($row) => $row->dlr_status ?? 'Message Submitted')
         ->make(true);
     }
 
@@ -186,6 +189,7 @@ class ReportsController extends Controller
         ->editColumn('error_code', fn($row) => $row->dlr_status_code ?? '')
         ->editColumn('error_message', fn($row) => $this->getDlrStatusInfo($row->dlr_status_code))
         ->editColumn('source', fn($row) => $row->sendMessage?->source ?? '')
+        ->editColumn('dlr_status', fn($row) => $row->dlr_status ?? 'Message Submitted')
         ->make(true);
     }
 

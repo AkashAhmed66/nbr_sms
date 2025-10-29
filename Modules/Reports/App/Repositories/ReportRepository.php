@@ -47,7 +47,7 @@ class ReportRepository implements ReportRepositoryInterface
     $reports = Outbox::with(['user.smsRate', 'sendMessage']);
 
     // $reports->where('dlr_status_code', '!=', 200);
-    $reports->where('dlr_status', '!=', "Delivered");
+    $reports->where('dlr_status', '!=', "Delivered")->orWhereNull('dlr_status');
 
     if ($request->operator == 'gp') {
       $reports->where(function ($q) {
@@ -120,7 +120,7 @@ class ReportRepository implements ReportRepositoryInterface
 
     // $reports->where('dlr_status_code', '!=', 200);
 
-    $reports->where('dlr_status', '!=', "Delivered");
+    $reports->where('dlr_status', '!=', "Delivered")->orWhereNull('dlr_status');
 
     if ($request->operator == 'gp') {
       $reports->where(function ($q) {
