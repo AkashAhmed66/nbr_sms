@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class FetchGbartaDlrCommand extends Command
 {
@@ -28,6 +29,8 @@ class FetchGbartaDlrCommand extends Command
     {
         $this->info('Fetching pending messages from sentmessages table...');
 
+        Log::info('Starting GBarta DLR fetch process.');
+
         // 1. Get messages with is_complete = null and created within last 5 mins
         $messages = DB::table('sms_records')
             ->where('status', 'Message Submitted')
@@ -41,6 +44,7 @@ class FetchGbartaDlrCommand extends Command
         }
 
         foreach ($messages as $msg) {
+            Log::info("Processing message ID: {$msg->id}");
             try {
                 $this->info("Processing message ID: {$msg->id}");
 
