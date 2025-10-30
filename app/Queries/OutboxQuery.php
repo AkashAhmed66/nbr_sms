@@ -74,7 +74,7 @@ class OutboxQuery
 
         if(!empty($filters['type'])) {
             if($filters['type'] == 'archive_failed' || $filters['type'] == 'normal_failed') {
-                $q->where('o.dlr_status_code', '!=', 200);
+                $q->where('o.dlr_status_code', '!=', "Delivered")->orWhereNull('o.dlr_status_code');
             }
         }
 
